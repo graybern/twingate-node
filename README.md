@@ -20,7 +20,3 @@ This project is licensed under the [MIT License](LICENSE).
 ## 🙏 Acknowledgments
 
 Special thanks to the Twingate team for their comprehensive API documentation. This library is based on their public GraphQL API, which you can explore at [twingate.com/docs/api](https://www.twingate.com/docs/api). 
-
---- 
-
-Let me know if you’d like further refinements or additional sections!
