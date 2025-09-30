@@ -1,0 +1,177 @@
+// src/resources/serviceAccounts.js
+
+import graphql from "../graphql/_index.js";
+import { gql } from "graphql-request";
+import { fetchAllPages } from "../utils/fetchAllPages.js";
+
+const serviceAccounts = (client) => {
+  const methods = {
+    /**
+     * Fetches a list of serviceAccounts
+     * @param {Object} args - Arguments for pagination (before, after, first, last, filter)
+     * @returns {Promise<Array>} - List of serviceAccounts
+     */
+    get: async (options = {}) => {
+      const query = graphql.queries.serviceAccounts.listServiceAccounts;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Fetching users with pagination options:", options);
+        const response = await client.request(query, options);
+        //return response.users.edges.map((edge) => edge.node);
+        return response.serviceAccounts;
+      } catch (error) {
+        logger.error(
+          "[serviceAccounts][get] Error fetching serviceAccounts:",
+          error
+        );
+        throw error;
+      }
+    },
+    /**
+     * Fetches a single connector by its ID
+     * @param {String} id - The connector's ID
+     * @returns {Promise<Object>} - connector details
+     */
+    getOne: async (id) => {
+      const query = graphql.queries.serviceAccounts.getServiceAccount;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info(`Fetching user with ID: ${id}`);
+        const response = await client.request(query, { id });
+        return response.serviceAccount;
+      } catch (error) {
+        logger.error(
+          `[serviceAccounts][getOne] Error fetching connector with ID ${id}:`,
+          error
+        );
+        throw error;
+      }
+    },
+    /**
+     * Fetch all serviceAccounts by automatically paginating through results **(WARNING - Use with caution)**
+     * @param {Object} options - Pagination and query options
+     * @returns {Promise<Array>} - All serviceAccounts from paginated results
+     */
+    getAll: async () => {
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Fetching all users...");
+        const query = graphql.queries.serviceAccounts.listServiceAccounts;
+
+        const allServiceAccounts = await fetchAllPages(
+          client,
+          query,
+          "serviceAccounts",
+          {
+            //maxPageSize: ,
+            //readRateLimitPerMinute: client.options.readRateLimitPerMinute,
+            logger,
+          }
+        );
+
+        //logger.info(`Fetched ${allUsers.length} users.`);
+        return allServiceAccounts;
+      } catch (error) {
+        logger.error(
+          "[serviceAccounts][getAll] Error fetching all serviceAccounts:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Return the fragment GQL string
+     * @returns {String} - GQL fragment string
+     */
+    getFragment: () => graphql.fragments,
+
+    /**
+     * Return the full query GQL string with fragment included
+     * @returns {String} - GQL query string
+     */
+    getQuery: () => graphql.queries.serviceAccounts,
+
+    /**
+     * Dynamically generate the list of available methods
+     * @returns {Array} - List of available method names
+     */
+    getAvailableMethods: () => Object.keys(methods),
+
+    /**
+     * Creates a new connector
+     * @param {Object} args - Arguments to create the new connector
+     * @returns {Promise<Object>} - Mutation fields
+     */
+    create: async (options = {}) => {
+      const mutation = graphql.mutations.serviceAccounts.serviceAccountCreate;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Creating a new user:", options);
+        //logger.info("Using mutation:", mutation); // Log mutation
+        const response = await client.request(mutation, options);
+        return response.serviceAccountCreate;
+      } catch (error) {
+        logger.error(
+          "[serviceAccounts][create] Error creating serviceAccount:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Deletes a single connector by its ID
+     * @param {String} id - The connector's ID to delete
+     * @returns {Promise<Object>} - Mutation fields
+     */
+    delete: async (id) => {
+      const mutation = graphql.mutations.serviceAccounts.serviceAccountDelete;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info(`Deleting user with ID: ${id}`);
+        const response = await client.request(mutation, { id });
+        return response.serviceAccountDelete;
+      } catch (error) {
+        logger.error(
+          `[serviceAccounts][delete] Error deleting serviceAccount with ID ${id}:`,
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Updates role of the connector
+     * @param {Object} options - Arguments to create the new connector
+     * @returns {Promise<Object>} - Mutation fields
+     */
+    update: async (options = {}) => {
+      const mutation = graphql.mutations.serviceAccounts.serviceAccountUpdate;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Creating a new user:", options);
+        //logger.info("Using mutation:", mutation); // Log mutation
+        const response = await client.request(mutation, options);
+        return response.serviceAccountUpdate;
+      } catch (error) {
+        logger.error(
+          "[serviceAccounts][update] Error updating serviceAccount:",
+          error
+        );
+        throw error;
+      }
+    },
+  };
+
+  return methods;
+  ``;
+};
+
+export default serviceAccounts;

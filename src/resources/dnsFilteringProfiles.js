@@ -1,0 +1,181 @@
+// src/resources/dnsFilteringProfiles.js
+
+import graphql from "../graphql/_index.js";
+import { gql } from "graphql-request";
+import { fetchAllPages } from "../utils/fetchAllPages.js";
+
+const dnsFilteringProfiles = (client) => {
+  const methods = {
+    /**
+     * Fetches a list of dnsFilteringProfiles
+     * @param {Object} args - Arguments for pagination (before, after, first, last, filter)
+     * @returns {Promise<Array>} - List of dnsFilteringProfiles
+     */
+    get: async (options = {}) => {
+      const query =
+        graphql.queries.dnsFilteringProfiles.listDnsFilteringProfiles;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Fetching users with pagination options:", options);
+        const response = await client.request(query, options);
+        //return response.users.edges.map((edge) => edge.node);
+        return response.dnsFilteringProfiles;
+      } catch (error) {
+        logger.error(
+          "[dnsFilteringProfiles][get] Error fetching dnsFilteringProfiles:",
+          error
+        );
+        throw error;
+      }
+    },
+    /**
+     * Fetches a single connector by its ID
+     * @param {String} id - The connector's ID
+     * @returns {Promise<Object>} - connector details
+     */
+    getOne: async (id) => {
+      const query = graphql.queries.dnsFilteringProfiles.getDnsFilteringProfile;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info(`Fetching user with ID: ${id}`);
+        const response = await client.request(query, { id });
+        return response.dnsFilteringProfile;
+      } catch (error) {
+        logger.error(
+          `[dnsFilteringProfiles][getOne] Error fetching connector with ID ${id}:`,
+          error
+        );
+        throw error;
+      }
+    },
+    /**
+     * Fetch all dnsFilteringProfiles by automatically paginating through results **(WARNING - Use with caution)**
+     * @param {Object} options - Pagination and query options
+     * @returns {Promise<Array>} - All dnsFilteringProfiles from paginated results
+     */
+    getAll: async () => {
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Fetching all users...");
+        const query =
+          graphql.queries.dnsFilteringProfiles.listDnsFilteringProfiles;
+
+        const allDnsFilteringProfiles = await fetchAllPages(
+          client,
+          query,
+          "dnsFilteringProfiles",
+          {
+            //maxPageSize: ,
+            //readRateLimitPerMinute: client.options.readRateLimitPerMinute,
+            logger,
+          }
+        );
+
+        //logger.info(`Fetched ${allUsers.length} users.`);
+        return allDnsFilteringProfiles;
+      } catch (error) {
+        logger.error(
+          "[dnsFilteringProfiles][getAll] Error fetching all dnsFilteringProfiles:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Return the fragment GQL string
+     * @returns {String} - GQL fragment string
+     */
+    getFragment: () => graphql.fragments,
+
+    /**
+     * Return the full query GQL string with fragment included
+     * @returns {String} - GQL query string
+     */
+    getQuery: () => graphql.queries.dnsFilteringProfiles,
+
+    /**
+     * Dynamically generate the list of available methods
+     * @returns {Array} - List of available method names
+     */
+    getAvailableMethods: () => Object.keys(methods),
+
+    /**
+     * Creates a new connector
+     * @param {Object} args - Arguments to create the new connector
+     * @returns {Promise<Object>} - Mutation fields
+     */
+    create: async (name) => {
+      const mutation =
+        graphql.mutations.dnsFilteringProfiles.dnsFilteringProfileCreate;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Creating a new user:", options);
+        //logger.info("Using mutation:", mutation); // Log mutation
+        const response = await client.request(mutation, { name });
+        return response.dnsFilteringProfileCreate;
+      } catch (error) {
+        logger.error(
+          "[dnsFilteringProfiles][create] Error creating dnsFilteringProfile:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Deletes a single connector by its ID
+     * @param {String} id - The connector's ID to delete
+     * @returns {Promise<Object>} - Mutation fields
+     */
+    delete: async (id) => {
+      const mutation =
+        graphql.mutations.dnsFilteringProfiles.dnsFilteringProfileDelete;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info(`Deleting user with ID: ${id}`);
+        const response = await client.request(mutation, { id });
+        return response.dnsFilteringProfileDelete;
+      } catch (error) {
+        logger.error(
+          `[dnsFilteringProfiles][delete] Error deleting dnsFilteringProfile with ID ${id}:`,
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Updates role of the connector
+     * @param {Object} options - Arguments to create the new connector
+     * @returns {Promise<Object>} - Mutation fields
+     */
+    update: async (options = {}) => {
+      const mutation =
+        graphql.mutations.dnsFilteringProfiles.dnsFilteringProfileUpdate;
+      const logger = client.logger || console;
+
+      try {
+        //logger.info("Creating a new user:", options);
+        //logger.info("Using mutation:", mutation); // Log mutation
+        const response = await client.request(mutation, options);
+        return response.dnsFilteringProfileUpdate;
+      } catch (error) {
+        logger.error(
+          "[dnsFilteringProfiles][update] Error updating dnsFilteringProfile:",
+          error
+        );
+        throw error;
+      }
+    },
+  };
+
+  return methods;
+};
+
+export default dnsFilteringProfiles;
