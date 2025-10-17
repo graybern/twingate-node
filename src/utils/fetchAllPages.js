@@ -1,21 +1,12 @@
 // src/utils/fetchAllPages.js
 
 import { withRetries } from "./withRetries.js";
-import { performance } from "perf_hooks";
 import { randomUUID } from "crypto";
-//import { createLogger } from "./logger.js";
-import { createWriteStream, JsonStream } from "./streamUtils.js";
-import os from "os";
+import { performance } from "perf_hooks";
+import { createWriteStream } from "./streamUtils.js";
+import fs from "fs";
 import path from "path";
-
-const RATE_LIMIT_WINDOW_MS = 60000; // 60 seconds in milliseconds
-
-// Function to fetch all pages of a paginated GraphQL query
-// TwingateClient: instance of TwingateClient
-// query: GraphQL query document
-// queryName: name of the query field to extract data from the response
-// variables: additional variables for the query (excluding pagination variables)
-// callOptions: options for this specific call (like streamToFile, streamToFilePath)
+import os from "os";
 
 export async function fetchAllPages(
   TwingateClient,
@@ -24,292 +15,467 @@ export async function fetchAllPages(
   variables = {},
   callOptions = {}
 ) {
-  const operationId = randomUUID();
-  // Use the client's logger instead of the global logger
+  const operationId = callOptions.resumeOperationId || randomUUID();
   const operationLogger = TwingateClient.logger.child({
     operationId,
-    functionName: "fetchAllPgs",
+    functionName: "fetchAllPages",
   });
   const { options } = TwingateClient;
 
-  // Determine if streaming is enabled, preferring call-specific options
-  const streamToFile = callOptions.streamToFile ?? options.streamToFile;
+  // Merge options with call-specific options
+  const fetchOptions = {
+    // Client defaults for pagination
+    maxPageSize: options.maxPageSize || 50,
+    readRateLimitPerMinute: options.readRateLimitPerMinute || 60,
 
-  // Determine the output file path
-  let outputFilePath;
+    // Checkpointing
+    enableCheckpointing: options.bulkCheckpointing !== false,
+    checkpointInterval: options.bulkCheckpointInterval || 5, // Check every 5 pages
+    checkpointDir:
+      options.bulkCheckpointDir ||
+      path.join(os.homedir(), "twingate-node-cache", "operations"),
 
+    // Streaming options
+    streamToFile: options.streamToFile || false,
+    streamToFilePath: options.streamToFilePath || null,
+    maxFileSize: options.maxFileSize || 100 * 1024 * 1024, // 100MB
+    maxFiles: options.maxFiles || 5,
+
+    // Rate limiting
+    rateLimitStrategy: options.rateLimitStrategy || "pacing",
+
+    // Override with call-specific options
+    ...callOptions,
+  };
+
+  // Create base operation directory
+  const operationDir = path.join(fetchOptions.checkpointDir, operationId);
+  if (!fs.existsSync(operationDir)) {
+    fs.mkdirSync(operationDir, { recursive: true });
+  }
+
+  const checkpointFilePath = path.join(operationDir, "fetch-checkpoint.json");
+  const summaryPath = path.join(operationDir, "operation-summary.json");
+
+  // Determine results file path
+  const resultsDir =
+    fetchOptions.streamToFilePath || path.join(operationDir, "results");
+  if (!fs.existsSync(resultsDir)) {
+    fs.mkdirSync(resultsDir, { recursive: true });
+  }
+
+  const dataFilePath = path.join(resultsDir, "fetched-data.jsonl");
+
+  // Initialize state
+  let state = {
+    operationId,
+    currentCursor: null,
+    pagesFetched: 0,
+    recordsFetched: 0,
+    hasNextPage: true,
+    startTime: Date.now(),
+    lastCheckpointTime: Date.now(),
+    metadata: {
+      operationType: "fetch_all_pages",
+      queryName,
+      timestamp: new Date().toISOString(),
+    },
+  };
+
+  // Resume from checkpoint if available
   if (
-    callOptions.streamToFilePath &&
-    typeof callOptions.streamToFilePath === "string"
+    fetchOptions.enableCheckpointing &&
+    callOptions.resumeOperationId &&
+    fs.existsSync(checkpointFilePath)
   ) {
-    // Use the call-specific path if provided
-    outputFilePath = callOptions.streamToFilePath;
-  } else if (
-    options.streamToFilePath &&
-    typeof options.streamToFilePath === "string"
-  ) {
-    // Use the client's configured path if provided
-    outputFilePath = options.streamToFilePath;
-  } else if (streamToFile) {
-    // Generate a dynamic filename based on operationId and queryName
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const sanitizedQueryName = queryName
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "-");
-    const shortOperationId = operationId.split("-")[0]; // First 8 characters of UUID
-    outputFilePath = path.join(
-      os.homedir(),
-      "twingate-node-cache",
-      `${sanitizedQueryName}-${shortOperationId}-${timestamp}.json`
+    try {
+      const savedState = JSON.parse(
+        fs.readFileSync(checkpointFilePath, "utf8")
+      );
+      state = {
+        ...savedState,
+        resumedAt: Date.now(),
+      };
+      operationLogger.info(
+        `Resuming fetch from checkpoint with cursor: ${
+          state.currentCursor || "START"
+        }`
+      );
+      operationLogger.info(
+        `Previously fetched ${state.pagesFetched} pages and ${state.recordsFetched} records`
+      );
+    } catch (err) {
+      operationLogger.warn(`Failed to load checkpoint file: ${err.message}`);
+    }
+  }
+
+  // Save checkpoint function
+  const saveCheckpoint = () => {
+    if (!fetchOptions.enableCheckpointing) return;
+
+    try {
+      fs.writeFileSync(
+        checkpointFilePath,
+        JSON.stringify(
+          {
+            ...state,
+            lastCheckpointTime: Date.now(),
+          },
+          null,
+          2
+        )
+      );
+      operationLogger.debug(
+        `Saved checkpoint after ${state.pagesFetched} pages, ${state.recordsFetched} records`
+      );
+    } catch (err) {
+      operationLogger.warn(`Failed to save checkpoint: ${err.message}`);
+    }
+  };
+
+  // Prepare result containers
+  let allItems = [];
+  let lastResponse = null;
+  let dataStream = null;
+
+  // Setup streaming if enabled
+  if (fetchOptions.streamToFile) {
+    operationLogger.info(`Results will be streamed to: ${dataFilePath}`);
+
+    // Create write stream
+    dataStream = createWriteStream(dataFilePath, operationLogger);
+
+    // Write header/metadata
+    dataStream.write(
+      JSON.stringify({
+        type: "metadata",
+        operationId,
+        queryName,
+        timestamp: new Date().toISOString(),
+      }) + "\n"
     );
   }
 
-  let jsonStream;
-
-  // If streaming is enabled and we have a valid path, set up the stream
-  if (streamToFile && outputFilePath) {
-    const streamOptions = {
-      maxFileSize:
-        callOptions.maxFileSize || options.maxFileSize || 100 * 1024 * 1024, // 100MB default
-      maxFiles: callOptions.maxFiles || options.maxFiles || 5, // Keep 5 files by default
-    };
-
-    jsonStream = new JsonStream(outputFilePath, operationLogger, streamOptions);
-    operationLogger.info(
-      `Streaming results to ${outputFilePath} (max size: ${(
-        streamOptions.maxFileSize /
-        1024 /
-        1024
-      ).toFixed(1)}MB per file)`
-    );
-  }
-
-  //operationLogger.info({ options }, "[START] Starting paginated fetch operation");
-
-  // --- 1. Initial call to get total count and estimate work ---
-  // We make a separate, direct request to get the total count for planning.
-  const initialData = await TwingateClient.client.request(query, {
-    ...variables,
-    first: 1,
-    after: null,
-  });
-
-  const totalCount = initialData[queryName]?.totalCount;
-  if (totalCount === undefined) {
-    operationLogger.error("Could not determine total count for pagination.");
-    throw new Error(
-      `Field 'totalCount' was not found on the response for query '${queryName}'.`
-    );
-  }
-
-  const totalPages = Math.ceil(totalCount / options.maxPageSize);
+  // --- 1. Initial call to get total count if not resuming ---
+  let totalCount = null;
+  let totalPages = null;
   let estimatedTimeInfo = "N/A";
 
-  // Estimate total network time using a fixed 900ms per request
-  const estimatedTotalNetworkTime = 900 * totalPages;
-  let estimatedTotalWaitTime = 0;
-
-  if (
-    options.rateLimitStrategy === "pacing" &&
-    options.readRateLimitPerMinute > 0 &&
-    totalPages > 1
-  ) {
-    // Calculate the total wait time. There are `totalPages - 1` waits.
-    estimatedTotalWaitTime =
-      ((totalPages - 1) * RATE_LIMIT_WINDOW_MS) /
-      options.readRateLimitPerMinute;
-  }
-
-  const totalEstimatedTime =
-    (estimatedTotalNetworkTime + estimatedTotalWaitTime) / 1000;
-  estimatedTimeInfo = `~${totalEstimatedTime.toFixed(2)}s`;
-
-  operationLogger.info(
-    { options },
-    `[START] Fetching ${totalCount} records across ${totalPages} pages. Estimated time: ${estimatedTimeInfo}`
-  );
-
-  if (totalCount === 0) {
-    operationLogger.info("No records to fetch.");
-    if (jsonStream) {
-      jsonStream.end();
-      await new Promise((resolve) => jsonStream.on("finish", resolve));
-      return {
-        success: true,
-        count: 0,
-        filePath: outputFilePath,
-        duration: "0.00",
-      };
-    }
-    return [];
-  }
-
-  // --- 2. Main fetch loop ---
-  const startTime = performance.now();
-  let allResults = [];
-  let hasNextPage = true;
-  let after = null;
-  let currentPage = 0;
-  let requestsInWindow = 0;
-  let windowStartTime = performance.now();
-
-  // --- Main loop to fetch all pages ---
-  while (hasNextPage) {
+  if (!callOptions.resumeOperationId || !state.totalCount) {
     try {
-      // Rate limiting logic applied BEFORE the request
-      if (options.readRateLimitPerMinute) {
-        if (options.rateLimitStrategy === "bursting") {
-          const now = performance.now();
-          if (now - windowStartTime > RATE_LIMIT_WINDOW_MS) {
-            // Reset window if a minute has passed
-            windowStartTime = now;
-            requestsInWindow = 0;
-          }
-
-          if (requestsInWindow >= options.readRateLimitPerMinute) {
-            const timeToWait = RATE_LIMIT_WINDOW_MS - (now - windowStartTime);
-            if (timeToWait > 0) {
-              operationLogger.info(
-                `Burst limit reached. Waiting ${timeToWait.toFixed(
-                  0
-                )}ms for window to reset.`
-              );
-              await new Promise((resolve) => setTimeout(resolve, timeToWait));
-            }
-            // Reset for the new window
-            windowStartTime = performance.now();
-            requestsInWindow = 0;
-          }
-        }
-      }
-
-      // Pass the child logger instance
-      const data = await TwingateClient.request(
+      // Make initial request to get total count
+      const initialData = await TwingateClient.request(
         query,
         {
           ...variables,
-          first: options.maxPageSize,
-          after,
+          first: 1,
+          after: null,
         },
         operationLogger
       );
 
-      // Accumulate results
-      const pageResults = data[queryName];
-      //console.log(pageResults);
+      totalCount = initialData[queryName]?.totalCount;
 
-      // Determine the correct data structure
-      let resultsArray = [];
-
-      // Handle paginated responses (edges)
-      if (Array.isArray(pageResults?.edges)) {
-        resultsArray = pageResults.edges.map((edge) => edge.node);
-      }
-      // Handle flat array responses (non-paginated, flat array of objects)
-      else if (Array.isArray(pageResults)) {
-        resultsArray = pageResults;
-      }
-      // Future edge case - alternative structure for page results
-      //else if (Array.isArray(pageResults?.nodes)) {
-      //resultsArray = pageResults.nodes; // Another alternative structure
-      //}
-      else {
+      if (totalCount === undefined) {
         operationLogger.warn(
-          { queryName },
-          `[fetchAllPages] Unexpected structure for query: ${queryName}`,
-          pageResults
+          "Could not determine total count for pagination. Will proceed without estimates."
         );
-      }
-
-      // If streaming, write to file. Otherwise, accumulate in memory.
-      if (jsonStream) {
-        for (const item of resultsArray) {
-          jsonStream.write(item);
-        }
       } else {
-        allResults = allResults.concat(resultsArray);
-      }
+        totalPages = Math.ceil(totalCount / fetchOptions.maxPageSize);
 
-      // Log progress
-      /*const pageProgress = `[Page ${String(currentPage + 1).padStart(
-        3,
-        "0"
-      )}/${String(totalPages).padStart(3, "0")}]`;*/
+        // Estimate completion time
+        const estimatedNetworkTimePerPage = 900; // ms
+        const estimatedTotalNetworkTime =
+          estimatedNetworkTimePerPage * totalPages;
 
-      const pageProgress = `[Page ${currentPage + 1}/${totalPages}]`;
+        let estimatedTotalWaitTime = 0;
+        if (
+          fetchOptions.rateLimitStrategy === "pacing" &&
+          fetchOptions.readRateLimitPerMinute > 0 &&
+          totalPages > 1
+        ) {
+          estimatedTotalWaitTime =
+            ((totalPages - 1) * 60000) / fetchOptions.readRateLimitPerMinute;
+        }
 
-      const totalSoFar = jsonStream
-        ? (currentPage + 1) * options.maxPageSize
-        : allResults.length;
+        const totalEstimatedTime =
+          (estimatedTotalNetworkTime + estimatedTotalWaitTime) / 1000;
+        estimatedTimeInfo = `~${totalEstimatedTime.toFixed(2)}s`;
 
-      operationLogger.info(
-        `${pageProgress} Fetched ${
-          resultsArray.length
-        } records. Total so far: ${Math.min(totalSoFar, totalCount)}.`
-      );
+        // Update state
+        state.totalCount = totalCount;
+        state.totalPages = totalPages;
 
-      // Check if pageInfo exists before accessing hasNextPage and after
-      const pageInfo = pageResults?.pageInfo;
-      hasNextPage = pageInfo?.hasNextPage ?? false;
-      after = pageInfo?.endCursor || null; // Set 'after' to null if no pagination exists
-      currentPage++;
-      if (options.rateLimitStrategy === "bursting") {
-        requestsInWindow++;
-      }
-
-      // Rate limiting - only wait if there is another page to fetch (Pacing Strategy)
-      if (
-        options.rateLimitStrategy === "pacing" &&
-        options.readRateLimitPerMinute &&
-        hasNextPage
-      ) {
-        const waitTime = RATE_LIMIT_WINDOW_MS / options.readRateLimitPerMinute; // Wait time between requests: 60000ms / 60rpm = 1000ms
-        operationLogger.debug(
-          `[Pacing at ${
-            options.readRateLimitPerMinute
-          }rpm] Waiting ${waitTime.toFixed(0)}ms before next request.`
+        operationLogger.info(
+          `[START] Fetching ${totalCount} records across ${totalPages} pages. Estimated time: ${estimatedTimeInfo}`
         );
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
+        operationLogger.info(
+          `Using max page size of ${fetchOptions.maxPageSize} with ${fetchOptions.rateLimitStrategy} rate limiting (${fetchOptions.readRateLimitPerMinute}/min)`
+        );
       }
     } catch (error) {
-      operationLogger.error(
-        `Failed to fetch page ${currentPage + 1}: ${error.message}`
+      operationLogger.warn(
+        `Could not perform initial count request: ${error.message}. Will proceed without count information.`
       );
-      throw error; // Re-throw the error to stop the process
+    }
+  } else {
+    // Use count from checkpoint
+    totalCount = state.totalCount;
+    totalPages = state.totalPages;
+
+    if (totalCount && totalPages) {
+      operationLogger.info(
+        `[RESUME] Continuing fetch of ${totalCount} records. ${
+          state.recordsFetched
+        } already fetched, ${totalCount - state.recordsFetched} remaining.`
+      );
     }
   }
 
-  // --- 3. Final summary ---
-  const endTime = performance.now();
-  const durationSeconds = ((endTime - startTime) / 1000).toFixed(2);
+  // Pagination logic
+  const paginationVariables = {
+    ...variables,
+    first: fetchOptions.maxPageSize,
+    after: state.currentCursor,
+  };
 
-  if (jsonStream) {
-    jsonStream.end();
-    await new Promise((resolve) => jsonStream.on("finish", resolve)); // Wait for stream to finish
+  // Track performance
+  const fetchStartTime = performance.now();
+  let lastPageTime = fetchStartTime;
 
-    const filePaths = jsonStream.getFilePaths();
-    const totalFiles = filePaths.length;
+  while (state.hasNextPage) {
+    try {
+      // Calculate page numbers for logging
+      const currentPage = state.pagesFetched + 1;
+      const pageDisplay = totalPages
+        ? `${currentPage}/${totalPages}`
+        : currentPage;
 
-    operationLogger.info(
-      `[END] Finished streaming ${totalCount} records to ${totalFiles} file(s) in ${durationSeconds} seconds.`
-    );
+      operationLogger.info(
+        `Fetching page ${pageDisplay}, cursor: ${
+          state.currentCursor || "START"
+        }`
+      );
 
-    // Add a small delay to ensure log message is flushed
-    await new Promise((resolve) => setTimeout(resolve, 50));
+      // Apply rate limiting if needed
+      if (
+        state.pagesFetched > 0 &&
+        fetchOptions.readRateLimitPerMinute > 0 &&
+        fetchOptions.rateLimitStrategy === "pacing"
+      ) {
+        const waitTime = 60000 / fetchOptions.readRateLimitPerMinute;
+        operationLogger.debug(
+          `[Pacing at ${
+            fetchOptions.readRateLimitPerMinute
+          }/min] Waiting ${waitTime.toFixed(0)}ms before next request`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
 
-    // Return a summary instead of the full dataset
-    return {
-      success: true,
-      count: totalCount,
-      filePaths: filePaths, // Return array of all created files
-      totalFiles: totalFiles,
-      duration: durationSeconds,
-    };
+      const pageStartTime = performance.now();
+
+      // Make API request with retries
+      const response = await TwingateClient.request(
+        query,
+        paginationVariables,
+        operationLogger
+      );
+
+      lastResponse = response;
+
+      // Calculate time taken for this page
+      const pageTime = performance.now() - pageStartTime;
+
+      // Process the results
+      const edges = response[queryName].edges || [];
+      const pageInfo = response[queryName].pageInfo || {};
+
+      // Update state
+      state.pagesFetched++;
+      state.recordsFetched += edges.length;
+      state.currentCursor = pageInfo.endCursor;
+      state.hasNextPage = pageInfo.hasNextPage;
+
+      // Process items
+      if (fetchOptions.streamToFile && dataStream) {
+        // Stream each item to file
+        edges.forEach((edge) => {
+          dataStream.write(
+            JSON.stringify({
+              ...edge.node,
+              __cursor: edge.cursor,
+            }) + "\n"
+          );
+        });
+      } else {
+        // Keep in memory
+        allItems.push(...edges.map((edge) => edge.node));
+      }
+
+      // Update cursor for next page
+      paginationVariables.after = state.currentCursor;
+
+      // Calculate elapsed and estimated remaining time
+      const elapsedTime = (performance.now() - fetchStartTime) / 1000;
+      let remainingEstimate = "unknown";
+
+      if (totalPages && currentPage < totalPages) {
+        const avgTimePerPage = elapsedTime / currentPage;
+        const pagesRemaining = totalPages - currentPage;
+        remainingEstimate = (avgTimePerPage * pagesRemaining).toFixed(1) + "s";
+      }
+
+      // Log progress with detailed information
+      const progressInfo = [
+        `Page ${pageDisplay} complete in ${(pageTime / 1000).toFixed(2)}s`,
+        `${edges.length} records fetched`,
+        `Total so far: ${state.recordsFetched}${
+          totalCount ? `/${totalCount}` : ""
+        } records`,
+        `Elapsed: ${elapsedTime.toFixed(1)}s${
+          totalPages ? `, Est. remaining: ${remainingEstimate}` : ""
+        }`,
+      ];
+
+      operationLogger.info(progressInfo.join(", "));
+
+      // Save checkpoint periodically
+      if (state.pagesFetched % fetchOptions.checkpointInterval === 0) {
+        saveCheckpoint();
+        operationLogger.debug(`Checkpoint saved at ${checkpointFilePath}`);
+      }
+
+      lastPageTime = performance.now();
+    } catch (error) {
+      // Save checkpoint on error to allow resuming
+      saveCheckpoint();
+
+      // Close stream if we have one
+      if (dataStream) {
+        dataStream.end();
+      }
+
+      operationLogger.error(`Error fetching page: ${error.message}`);
+
+      // Attach operation ID to error for resumption
+      error.operationId = operationId;
+      error.checkpointFile = checkpointFilePath;
+      throw error;
+    }
   }
 
-  operationLogger.info(
-    `[END] Fetched all ${allResults.length} records via ${totalPages} API calls in ${durationSeconds} seconds.`
+  // Close data stream if we have one
+  if (dataStream) {
+    dataStream.end();
+  }
+
+  // Final checkpoint when complete
+  saveCheckpoint();
+
+  // Calculate duration
+  const duration = (performance.now() - fetchStartTime) / 1000;
+
+  // Create final summary
+  let result;
+  if (fetchOptions.streamToFile) {
+    // Calculate line count (subtract header)
+    const lineCount = countLinesInFile(dataFilePath) - 1;
+
+    result = {
+      operationId,
+      operationDir,
+      queryName,
+      count: state.recordsFetched,
+      pagesFetched: state.pagesFetched,
+      duration,
+      filePath: dataFilePath,
+      checkpointFilePath: fetchOptions.enableCheckpointing
+        ? checkpointFilePath
+        : null,
+      summaryFilePath: summaryPath,
+      streamToFile: true,
+    };
+  } else {
+    // Memory result
+    result = allItems;
+    Object.defineProperties(result, {
+      count: { value: allItems.length },
+      pagesFetched: { value: state.pagesFetched },
+      duration: { value: duration },
+      operationId: { value: operationId },
+      operationDir: { value: operationDir },
+    });
+  }
+
+  // Save final summary
+  fs.writeFileSync(
+    summaryPath,
+    JSON.stringify(
+      {
+        operationId,
+        queryName,
+        count: state.recordsFetched,
+        pagesFetched: state.pagesFetched,
+        duration,
+        hasStreamedOutput: fetchOptions.streamToFile,
+        outputFilePath: fetchOptions.streamToFile ? dataFilePath : null,
+        timestamp: new Date().toISOString(),
+      },
+      null,
+      2
+    )
   );
 
-  return allResults;
+  // Detailed completion log
+  operationLogger.info(
+    `[COMPLETE] Fetched ${state.recordsFetched} records across ${
+      state.pagesFetched
+    } pages in ${duration.toFixed(2)}s`
+  );
+
+  // Performance metrics
+  const avgTimePerPage = duration / state.pagesFetched;
+  const avgRecordsPerSecond = state.recordsFetched / duration;
+
+  operationLogger.info(
+    `Performance metrics: ${avgTimePerPage.toFixed(2)}s per page, ${Math.round(
+      avgRecordsPerSecond
+    )} records/second`
+  );
+
+  if (fetchOptions.streamToFile) {
+    operationLogger.info(`Results saved to: ${dataFilePath}`);
+  }
+
+  // Determine if we should keep the checkpoint file
+  const shouldKeepCheckpoint =
+    // Explicitly set by user
+    callOptions.keepCheckpoint ??
+    // OR automatically keep when streaming is enabled or for large operations
+    (fetchOptions.streamToFile || state.recordsFetched >= 1000);
+
+  if (fetchOptions.enableCheckpointing && !shouldKeepCheckpoint) {
+    try {
+      fs.unlinkSync(checkpointFilePath);
+    } catch (err) {
+      // Ignore deletion errors
+    }
+  } else if (fetchOptions.enableCheckpointing) {
+    operationLogger.info(`Checkpoint preserved at: ${checkpointFilePath}`);
+    operationLogger.info(
+      `To resume this operation if needed, use: { resumeOperationId: '${operationId}' }`
+    );
+  }
+
+  return result;
+}
+
+function countLinesInFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return 0;
+    const content = fs.readFileSync(filePath, "utf8");
+    return content.split("\n").filter((line) => line.trim()).length;
+  } catch (err) {
+    return 0;
+  }
 }

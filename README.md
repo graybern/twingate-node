@@ -201,4 +201,54 @@ Special thanks to the Twingate team for their comprehensive API documentation. T
 
 ---
 
+## Cache Directory Structure
+
+For operations that involve fetching or modifying data, the client caches the results to optimize performance and reduce API calls. The cache directory is structured as follows:
+
+```bash
+~/twingate-node-cache/operations/
+└── [operation-id]/
+    ├── checkpoint.json
+    ├── operation-summary.json
+    └── results/
+        ├── fetched-data.jsonl           (for read operations)
+        ├── successful-operations.jsonl  (for write operations)
+        └── failed-operations.jsonl      (for write operations)
+```
+
+- **checkpoint.json**: Stores the last checkpoint (current cursor and counts) for resumable operations.
+- **operation-summary.json**: Contains a summary of the operation, including status and metadata.
+- **results/**: A directory containing the results of the operation, stored in JSON Lines format. Separate files are used for successful and failed operations to facilitate easier processing and retrying of failed operations.
+
+1. For Read Operations (fetchAllPages):
+
+- checkpoint.json - Contains the current cursor and counts
+- fetched-data.jsonl - Contains the actual fetched data
+- operation-summary.json - Contains operation statistics
+
+2. For Write Operations (processBulkMutations):
+
+- checkpoint.json - Contains processed indices and counts
+- successful-operations.jsonl - Records successful updates
+- failed-operations.jsonl - Records failed updates
+- operation-summary.json - Contains operation statistics
+
+### Resuming an Operation
+
+To resume an interrupted operation:
+
+```javascript
+// For reading resources
+client.resources.getAll({
+  resumeOperationId: "previous-operation-id",
+});
+
+// For updating resources
+client.resources.updateBulk(items, {
+  resumeOperationId: "previous-operation-id",
+});
+```
+
+---
+
 Let me know if you’d like further refinements or additional sections!

@@ -261,6 +261,41 @@ const resources = (client) => {
     },
 
     /**
+     * Delete multiple resources in bulk with controlled concurrency and error tracking
+     * @param {Array<String>} ids - Array of resource IDs to delete
+     * @param {Object} options - Options for the bulk operation
+     * @returns {Promise<Object>} Results containing successful and failed operations
+     */
+    deleteBulk: async (ids = [], options = {}) => {
+      const mutation = graphql.mutations.resources.resourceDelete;
+      const logger = client.logger;
+
+      try {
+        // Convert IDs to items format expected by processBulkMutations
+        const items = ids.map((id) => ({ id }));
+
+        // Define the mutation function
+        const deleteResourceFn = async (batch) => {
+          if (batch.length === 1) {
+            return client.request(mutation, { id: batch[0].id });
+          } else {
+            // For future batch implementation
+            throw new Error("Batch size > 1 not supported by the current API");
+          }
+        };
+
+        // Process bulk delete with tracking
+        return processBulkMutations(client, deleteResourceFn, items, options);
+      } catch (error) {
+        logger.error(
+          "[resources][deleteBulk] Error deleting resources:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
      * Retry failed items from a previous bulk operation
      * @param {Array} failedItems - Array of failed items from a previous operation
      * @param {Object} options - Options for the retry operation
@@ -283,6 +318,35 @@ const resources = (client) => {
       } catch (error) {
         logger.error(
           "[resources][retryFailedUpdates] Error retrying failed updates:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
+     * Retry failed items from a previous bulk delete operation
+     * @param {Array} failedItems - Array of failed items from a previous delete operation
+     * @param {Object} options - Options for the retry operation
+     * @returns {Promise<Object>} Results of the retry operation
+     */
+    retryFailedDeletes: async (failedItems = [], options = {}) => {
+      const logger = client.logger;
+
+      try {
+        // Extract the IDs to retry from the failed results
+        const idsToRetry = failedItems.map((failure) => failure.item.id);
+
+        if (idsToRetry.length === 0) {
+          logger.info("No failed deletes to retry");
+          return { successful: [], failed: [], total: 0 };
+        }
+
+        logger.info(`Retrying ${idsToRetry.length} failed deletes`);
+        return methods.deleteBulk(idsToRetry, options);
+      } catch (error) {
+        logger.error(
+          "[resources][retryFailedDeletes] Error retrying failed deletes:",
           error
         );
         throw error;

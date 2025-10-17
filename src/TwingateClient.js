@@ -24,16 +24,12 @@ class TwingateClient {
       timeout: 35000, // Default value
       rateLimitStrategy: "pacing", // 'pacing' or 'bursting'
       streamToFile: false, // Default value
-      streamToFilePath: path.join(
-        os.homedir(),
-        "twingate-node-cache",
-        "responses"
-      ), // Will be generated dynamically with operationId
+      streamToFilePath: null, // Will be generated dynamically with operationId
       maxFileSize: 100 * 1024 * 1024, // 100MB per file default
       maxFiles: 5, // Keep 5 rotated files by default
       logLevel: "info", // Default log level
       bulkConcurrency: 5, // Number of concurrent operations
-      bulkBatchSize: 1, // Items per mutation request (1 = individual)
+      bulkBatchSize: 10, // Items per mutation request (1 = individual)
       bulkContinueOnError: true, // Continue processing after errors
       bulkCheckpointing: true, // Enable checkpointing for recovery
       bulkCheckpointInterval: 50, // Save state after every 50 operations
@@ -75,20 +71,19 @@ class TwingateClient {
   async request(
     query,
     variables = {},
-    logger = this.logger, // Use client's logger by default
-    operationId = null
+    logger = this.logger,
+    operationId = null,
+    isWriteOperation = false // Add this parameter
   ) {
-    // Use the client's logger by default instead of global logger
     const executeRequest = async () => this.client.request(query, variables);
-
-    // If the passed logger is a child logger, it will have the operationId in its bindings.
-    // Use that as the primary source for the operationId.
     const opId = logger.bindings?.().operationId || operationId;
 
     return withRetries(executeRequest, {
       ...this.options,
       logger,
       operationId: opId,
+      writeRateLimitPerMinute: this.options.writeRateLimitPerMinute,
+      isWriteOperation, // Pass this through
     });
   }
 }

@@ -8,6 +8,8 @@ export async function withRetries(
     timeout,
     logger,
     operationId: parentOperationId,
+    writeRateLimitPerMinute, // Add this parameter
+    isWriteOperation = false, // Add this parameter
   } = {}
 ) {
   // If an operationId is provided, use it to create/get the logger.
@@ -28,9 +30,20 @@ export async function withRetries(
   while (attempt <= maxRetries) {
     try {
       metrics.attempts++;
+
+      // Apply write rate limiting for retries on write operations
+      if (attempt > 0 && isWriteOperation && writeRateLimitPerMinute > 0) {
+        const waitTime = (60000 / writeRateLimitPerMinute) | 0;
+        operationLogger.debug(
+          `[Retry ${attempt}] Applying write rate limit: waiting ${waitTime}ms before retry`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
+
       operationLogger.debug(
         `[Attempt ${attempt + 1}/${maxRetries + 1}] Executing request.`
       );
+
       // Wrap the function call with a timeout
       const result = await Promise.race([
         fn(),
@@ -65,14 +78,22 @@ export async function withRetries(
         }`
       );
 
-      // Handle 429 Too Many Requests
+      // Handle 429 Too Many Requests - respect server's retry-after but ensure minimum based on rate limit
       if (error.response?.status === 429) {
-        const retryAfter =
-          parseInt(error.response.headers["retry-after"], 10) || 1000;
+        const serverRetryAfter =
+          parseInt(error.response.headers["retry-after"], 10) | 0 || 1000;
+
+        // For write operations, ensure we wait at least the rate limit interval
+        let retryAfter = serverRetryAfter;
+        if (isWriteOperation && writeRateLimitPerMinute > 0) {
+          const minWaitTime = 60000 / writeRateLimitPerMinute;
+          retryAfter = Math.max(serverRetryAfter, minWaitTime);
+        }
+
         operationLogger.warn(
           `[Attempt ${attempt + 1}/${
             maxRetries + 1
-          }] Rate limit reached, retrying after ${retryAfter}ms...`
+          }] Rate limit reached, retrying after ${retryAfter}ms (server: ${serverRetryAfter}ms)...`
         );
         await new Promise((resolve) => setTimeout(resolve, retryAfter));
         continue;
