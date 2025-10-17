@@ -229,6 +229,44 @@ const resources = (client) => {
     },
 
     /**
+     * Create multiple resources in bulk with controlled concurrency and error tracking
+     * @param {Array<Object>} items - Array of resource creation objects
+     * @param {Object} options - Options for the bulk operation
+     * @returns {Promise<Object>} Results containing successful and failed operations
+     */
+    createBulk: async (items = [], options = {}) => {
+      const mutation = graphql.mutations.resources.resourceCreate;
+      const logger = client.logger;
+
+      try {
+        // Define the mutation function
+        const createResourceFn = async (batch, isWriteOperation = false) => {
+          if (batch.length === 1) {
+            return client.request(
+              mutation,
+              batch[0],
+              logger,
+              null,
+              isWriteOperation
+            );
+          } else {
+            // For future batch implementation
+            throw new Error("Batch size > 1 not supported by the current API");
+          }
+        };
+
+        // Process bulk create with tracking
+        return processBulkMutations(client, createResourceFn, items, options);
+      } catch (error) {
+        logger.error(
+          "[resources][createBulk] Error creating resources:",
+          error
+        );
+        throw error;
+      }
+    },
+
+    /**
      * Update multiple resources in bulk with controlled concurrency and error tracking
      * @param {Array<Object>} items - Array of resource update objects
      * @param {Object} options - Options for the bulk operation

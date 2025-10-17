@@ -33,3 +33,38 @@ const options = {
 
 // Twingate client
 const client = twingate(tenantName, apiKey, options);
+
+var resourceIds = [];
+client.resources
+  .getAll()
+  .then((results) => {
+    // Process results - results is an array of resource objects
+    results.forEach((resource) => {
+      resourceIds.push(resource.id);
+    });
+    console.log(`✅ Retrieved ${resourceIds.length} resources.`);
+    console.log(`resource[1] id: ${resourceIds[1]}`);
+    //var tempResourceIds = [resourceIds[1], resourceIds[2]];
+    client.resources
+      .deleteBulk(resourceIds)
+      .then((deleteResults) => {
+        console.log("\n=== BULK DELETE RESULTS ===");
+        console.log(`- Total Items: ${deleteResults.total}`);
+        console.log(`- Successful: ${deleteResults.successful.length}`);
+        console.log(`- Failed: ${deleteResults.failed.length}`);
+      })
+      .catch((deleteErr) => {
+        console.error("❌ Error during bulk delete:", deleteErr);
+      });
+  })
+  .catch((err) => {
+    console.error("❌ Error: ", err);
+
+    // Show resume instructions if available
+    if (err.operationId) {
+      console.log(`\nTo resume this operation:`);
+      console.log(
+        `client.resources.getAll({ resumeOperationId: '${err.operationId}' })`
+      );
+    }
+  });
