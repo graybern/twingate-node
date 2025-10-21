@@ -4,6 +4,14 @@ import resources from "./resources/_index.js"; // Consolidated import of resourc
 import { createLogger } from "./utils/logger.js"; // Import the factory function
 import os from "os";
 import path from "path";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+
+// Get package.json version
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const packageJsonPath = path.join(__dirname, "..", "package.json");
+const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 
 class TwingateClient {
   constructor(tenantName, apiKey, options = {}) {
@@ -52,13 +60,20 @@ class TwingateClient {
     // For verification, you can add a debug log right after initialization
     this.logger.debug("TwingateClient initialized with debug logging enabled.");
 
-    // Initialize GraphQLClient
+    // Generate User-Agent header
+    const userAgent = `${packageJson.name}/${packageJson.version}`;
+
+    // Initialize GraphQLClient with User-Agent
     this.client = new GraphQLClient(this.tenantUrl, {
       headers: {
         "X-API-KEY": this.apiKey,
         "Content-Type": "application/json",
+        "User-Agent": userAgent,
       },
     });
+
+    // Log the User-Agent being used
+    this.logger.debug(`Using User-Agent: ${userAgent}`);
 
     // Attach resources
     Object.entries(resources).forEach(([key, resource]) => {

@@ -35,14 +35,18 @@ const options = {
 const client = twingate(tenantName, apiKey, options);
 
 // Configuration - Update these with your actual IDs
-const numberOfResources = 100;
+const numberOfResources = 10000;
 const remoteNetworkId = "UmVtb3RlTmV0d29yazo2OTQ0Mw=="; // Replace with your remote network ID
 const securityPolicyId = "U2VjdXJpdHlQb2xpY3k6MjE0MDY5"; // Replace with your security policy ID
 const groupIds = ["R3JvdXA6MTg0ODU2"]; // Replace with your group IDs
+// group 1 => 1000 resources
+// group 2 => 2000 resources
+// group 3 => 3000 resources
+// ... (manually assigning user to groups)
 
 // Generate resource list
 const resourceItems = [];
-for (let i = 1; i <= numberOfResources; i++) {
+for (let i = 8001; i <= numberOfResources; i++) {
   const paddedNumber = i.toString().padStart(3, "0");
 
   resourceItems.push({
