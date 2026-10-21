@@ -27,161 +27,126 @@ This repository contains an **unofficial** Node.js client for interacting with t
 ```bash
 twingate-node/
 ├── src/
-│   ├── client.js               # Main client logic
+│   ├── client.js               # Factory: twingate(tenantName, apiKey, options)
+│   ├── TwingateClient.js       # Client class (GraphQL client, options, logger, request wrapper)
 │   ├── graphql/
-│   │   ├── queries.js          # GraphQL query definitions
-│   │   ├── mutations.js        # GraphQL mutation definitions
-│   │   └── fragments.js        # Common reusable GraphQL fragments
-│   ├── resources/              # Higher-level abstractions
-│   │   ├── serviceAccounts.js
-│   │   ├── networkResources.js
-│   │   ├── users.js
-│   │   └── ...
+│   │   ├── _index.js           # Aggregates queries + mutations
+│   │   ├── fragments.js        # Reusable GraphQL fragments
+│   │   ├── queries/<entity>/   # Query definitions per entity
+│   │   └── mutations/<entity>/ # Mutation definitions per entity
+│   ├── resources/              # One module per entity (users, groups, resources, ...)
 │   └── utils/
-│       ├── retry.js            # Retry and exponential backoff logic
-│       ├── pagination.js       # Helper functions for pagination
-│       └── fetchWrapper.js     # Abstraction for fetch requests
-├── tests/                      # Tests for the library
-├── examples/                   # Example usage scripts
-├── .env.example                # Example environment variables
-├── .gitignore                  # Git ignore file
-├── package.json                # npm package configuration
-├── README.md                   # Documentation for usage
-└── LICENSE                     # License file
+│       ├── withRetries.js      # Retry, exponential backoff and rate limiting
+│       ├── fetchAllPages.js    # Cursor pagination with checkpoint/resume + streaming
+│       ├── processBulkMutations.js # Bulk create/update/delete with checkpointing
+│       ├── streamUtils.js      # JSONL streaming to rotated files
+│       ├── fetchWrapper.js
+│       └── logger.js           # pino logger factory
+├── __tests__/                  # Jest tests (currently stale, see TODO.md)
+├── examples/                   # Example scripts + .env.example
+├── PLANNING.md                 # Longer-term design notes (CLI, explorer, visualizer)
+└── TODO.md                     # Known issues and next steps
 ```
 
 ---
 
 ## 🛠️ Installation
 
-To install the library, use `npm` or `yarn`:
+Not published to npm. Clone the repo and install dependencies:
 
 ```bash
-npm install twingate-node
-# or
-yarn add twingate-node
+git clone https://github.com/graybern/twingate-node.git
+cd twingate-node
+npm install
+cp examples/.env.example .env   # then fill in TWINGATE_API_TENANT and TWINGATE_API_KEY
 ```
 
 ---
 
 ## 🚀 Usage
 
+The library is ESM (`"type": "module"`).
+
 ### Basic Setup
 
 ```javascript
-const { TwingateClient } = require("twingate-node");
+import twingate from "./src/client.js";
+import dotenv from "dotenv";
+dotenv.config();
 
-const client = new TwingateClient({
-  apiKey: "your-api-key-here", // Replace with your Twingate API key
-});
+const client = twingate(
+  process.env.TWINGATE_API_TENANT, // "acme" for https://acme.twingate.com
+  process.env.TWINGATE_API_KEY,
+  { logLevel: "info" }
+);
 
-// Example: Fetch all service accounts
-client.serviceAccounts
-  .list()
-  .then((response) => {
-    console.log("Service Accounts:", response);
-  })
-  .catch((error) => {
-    console.error("Error:", error);
-  });
+const groups = await client.groups.getAll();
+console.log(groups.map((g) => `${g.name} = ${g.id}`));
 ```
+
+See `examples/demo.js` and `examples/test<Entity>.js` for more.
 
 ### Configuration Options
 
-When initializing the `TwingateClient`, you can provide the following options:
+`twingate(tenantName, apiKey, options)` — `tenantName` and `apiKey` are required. Defaults live in `src/TwingateClient.js`.
 
-| Option    | Type   | Description                                                                  |
-| --------- | ------ | ---------------------------------------------------------------------------- |
-| `apiKey`  | String | Your Twingate API key (required).                                            |
-| `baseUrl` | String | The base URL for Twingate API (default: `https://api.twingate.com/graphql`). |
-| `timeout` | Number | Timeout for API requests in milliseconds (default: `5000`).                  |
-| `retries` | Number | Number of retries for failed requests (default: `3`).                        |
+| Option                    | Default                              | Description                                                                  |
+| ------------------------- | ------------------------------------ | ---------------------------------------------------------------------------- |
+| `tenantBaseUrl`           | `https://<tenantName>.twingate.com`  | Override the API host (e.g. non-production). `/api/graphql/` is appended.    |
+| `maxPageSize`             | `50`                                 | Items per page for paginated reads.                                          |
+| `maxRetries`              | `5`                                  | Retries for failed requests.                                                 |
+| `backoffFactor`           | `2`                                  | Exponential backoff multiplier (1s, 2s, 4s, ...).                            |
+| `readRateLimitPerMinute`  | `60`                                 | Client-side read rate limit.                                                 |
+| `writeRateLimitPerMinute` | `20`                                 | Client-side write rate limit.                                                |
+| `timeout`                 | `35000`                              | Request timeout (ms).                                                        |
+| `rateLimitStrategy`       | `"pacing"`                           | `"pacing"` or `"bursting"`.                                                  |
+| `streamToFile`            | `false`                              | Stream `getAll` results to JSONL files instead of memory.                    |
+| `streamToFilePath`        | generated                            | Output path when streaming.                                                  |
+| `maxFileSize` / `maxFiles`| `100MB` / `5`                        | Rotation settings for streamed files.                                        |
+| `logLevel`                | `"info"`                             | pino log level.                                                              |
+| `bulkConcurrency`         | `5`                                  | Concurrent operations for bulk mutations.                                    |
+| `bulkBatchSize`           | `10`                                 | Items per bulk batch.                                                        |
+| `bulkContinueOnError`     | `true`                               | Keep going after a failed item.                                              |
+| `bulkCheckpointing`       | `true`                               | Persist progress so bulk runs can resume.                                    |
+| `bulkCheckpointInterval`  | `50`                                 | Save state every N operations.                                               |
+| `bulkCheckpointDir`       | `~/twingate-node-cache/checkpoints`  | Checkpoint directory.                                                        |
 
-Centralized Retry Logic:
-
-Wrapping all requests with withRetries ensures that every query and mutation benefits from the same retry logic.
-Customizable Options:
-
-The retry count, backoff factor, and timeout are configurable, making the client versatile for different use cases.
-Rate Limit Handling:
-
-The use of the Retry-After header for 429 responses ensures graceful handling of rate limits.
+All requests go through `withRetries`, which applies retry/backoff, honors `Retry-After` on 429s, and enforces the read/write rate limits. Requests send a `User-Agent` of `twingate-node/<version>`.
 
 ---
 
 ## 📚 API Reference
 
-The client provides methods for interacting with Twingate resources, including:
+Entities: `accessRequests`, `connectors`, `devices`, `dnsFilteringProfiles`, `groups`, `kubernetesResources`, `remoteNetworks`, `resources`, `securityPolicies`, `serialNumbers`, `serviceAccountKeys`, `serviceAccounts`, `users`.
 
-| **Method**                | **Purpose**                                         | **Name Recommendation**          |
-| ------------------------- | --------------------------------------------------- | -------------------------------- |
-| **Get Paginated Results** | Fetch paginated data                                | `resource.get()`                 |
-| **Get Single Result**     | Fetch a single record by ID or key                  | `resource.getOne()`              |
-| **Get All Results**       | Fetch all results without pagination                | `resource.getAll()`              |
-| **Get GQL Fragment**      | Return the GraphQL fragment as a string             | `resource.getFragment()`         |
-| **Get Full GQL Query**    | Return the full GraphQL query as a string           | `resource.getQuery()`            |
-| **Get Available Methods** | Return a list of available methods for the resource | `resource.getAvailableMethods()` |
-| **Update Resource**       | Update a resource                                   | `resource.update()`              |
-| **Create Resource**       | Create a resource                                   | `resource.create()`              |
-| **Delete Resource**       | Delete a resource                                   | `resource.delete()`              |
+Every entity supports:
 
----
+| Method                  | Purpose                                         |
+| ----------------------- | ----------------------------------------------- |
+| `get(options)`          | Fetch one page of results                       |
+| `getOne(id)`            | Fetch a single record by ID                     |
+| `getAll(options)`       | Fetch all results by paginating automatically   |
+| `getFragment()`         | Return the GraphQL fragment as a string         |
+| `getQuery()`            | Return the full GraphQL query as a string       |
+| `getAvailableMethods()` | List the methods available on the entity        |
 
-### **Examples of Usage**
+Entity-specific mutations include `create` / `update` / `delete` (most entities), `accessRequests.approve/reject`, `connectors.generateTokens`, `devices.archive/unarchive/block/unblock`, `serviceAccountKeys.revoke`, `users.detailsUpdate/roleUpdate/resetMfa`, and `resources.accessAdd/accessSet/accessRemove`.
 
-#### Fetch Paginated Results:
+> `getAll(options)` accepting `streamToFile` / `resumeOperationId` is currently wired up for `resources` and `groups` only (see TODO.md).
 
-```javascript
-const users = await client.users.get({ page: 1, size: 20 });
-```
-
-#### Fetch a Single Record:
+### Bulk operations (`resources`)
 
 ```javascript
-const user = await client.users.getOne(userId);
+const results = await client.resources.createBulk(items); // items: array of resourceCreate variables
+// results => { total, successful: [...], failed: [...] }
+
+await client.resources.updateBulk(items);
+await client.resources.deleteBulk(ids);
+await client.resources.retryFailedUpdates(results.failed);
+await client.resources.retryFailedDeletes(results.failed);
 ```
 
-#### Fetch All Results:
-
-```javascript
-const allUsers = await client.users.getAll();
-```
-
-#### Fetch GQL Fragment:
-
-```javascript
-const fragment = client.users.getFragment();
-```
-
-#### Fetch Full GQL Query:
-
-```javascript
-const query = client.users.getQuery();
-```
-
-#### Fetch Available Methods:
-
-```javascript
-const methods = client.users.getAvailableMethods();
-```
-
-#### Update a Resource:
-
-```javascript
-await client.users.update(userId, userData);
-```
-
-#### Create a Resource:
-
-```javascript
-await client.users.create(newUser);
-```
-
-#### Delete a Resource:
-
-```javascript
-await client.users.delete(userId);
-```
+See `examples/demo-write-createMany.js` and `examples/demo-write-deleteAll.js`.
 
 ## 🛠️ Contribution Policy
 
@@ -249,6 +214,3 @@ client.resources.updateBulk(items, {
 });
 ```
 
----
-
-Let me know if you’d like further refinements or additional sections!

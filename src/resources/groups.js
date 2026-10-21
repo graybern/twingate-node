@@ -50,23 +50,29 @@ const groups = (client) => {
     },
     /**
      * Fetch all groups by automatically paginating through results **(WARNING - Use with caution)**
-     * @param {Object} options - Pagination and query options
-     * @returns {Promise<Array>} - All groups from paginated results
+     * @param {object} [options] - Options for the operation.
+     * @param {boolean} [options.streamToFile] - If true, streams results to a file.
+     * @param {string} [options.streamToFilePath] - Path for the streamed file.
+     * @param {string} [options.resumeOperationId] - Operation ID to resume from checkpoint.
+     * @returns {Promise<Array|object>} A promise that resolves to an array of all groups or a summary object if streaming.
      */
-    getAll: async () => {
-      const logger = client.logger || console;
+    getAll: async (options = {}) => {
+      // Use the client's logger instead of fallback to console
+      const logger = client.logger;
 
       try {
-        //logger.info("Fetching all users...");
+        //logger.info("Fetching all groups...");
         const query = graphql.queries.groups.listGroups;
 
-        const allgroups = await fetchAllPages(client, query, "groups", {
-          //maxPageSize: ,
-          //readRateLimitPerMinute: client.options.readRateLimitPerMinute,
-          logger,
-        });
+        const allgroups = await fetchAllPages(
+          client,
+          query,
+          "groups",
+          {}, // No variables needed for this specific query
+          options // Pass call-specific options like streamToFile
+        );
 
-        //logger.info(`Fetched ${allUsers.length} users.`);
+        //logger.info(`Fetched ${allgroups.length} groups.`);
         return allgroups;
       } catch (error) {
         logger.error("[groups][getAll] Error fetching all groups:", error);

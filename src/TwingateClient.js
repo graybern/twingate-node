@@ -20,7 +20,13 @@ class TwingateClient {
     }
 
     this.tenantName = tenantName;
-    this.tenantUrl = `https://${tenantName}.twingate.com/api/graphql/`;
+    // Optional base URL override (e.g. non-production environments)
+    const baseUrl = (
+      options.tenantBaseUrl || `https://${tenantName}.twingate.com`
+    ).replace(/\/+$/, "");
+    this.tenantUrl = baseUrl.endsWith("/api/graphql")
+      ? `${baseUrl}/`
+      : `${baseUrl}/api/graphql/`;
     this.apiKey = apiKey;
 
     this.options = {
@@ -74,6 +80,7 @@ class TwingateClient {
 
     // Log the User-Agent being used
     this.logger.debug(`Using User-Agent: ${userAgent}`);
+    this.logger.debug(`Using Twingate API URL: ${this.tenantUrl}`);
 
     // Attach resources
     Object.entries(resources).forEach(([key, resource]) => {

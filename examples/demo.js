@@ -11,9 +11,11 @@ dotenv.config(); // Load the variables from the .env file
 // Access the environment variables
 const tenantName = process.env.TWINGATE_API_TENANT;
 const apiKey = process.env.TWINGATE_API_KEY;
+const tenantBaseUrl = process.env.TWINGATE_API_BASE_URL || null;
 
 // Twingate client options
 const options = {
+  tenantBaseUrl: tenantBaseUrl, // Optional custom tenant base URL
   maxPageSize: 50, // Maximum number of items per page for paginated requests
   maxRetries: 5, // Number of retries for failed requests
   backoffFactor: 2, // Factor by which to increase delay between retries for exponential backoff (e.g., 1s, 2s, 4s, 8s...)
@@ -124,7 +126,7 @@ const updateResourcesBulk = async () => {
 updateResourcesBulk();
 */
 
-var resourceIds = [];
+/*var resourceIds = [];
 client.resources
   .getAll()
   .then((results) => {
@@ -157,4 +159,19 @@ client.resources
         `client.resources.getAll({ resumeOperationId: '${err.operationId}' })`
       );
     }
+  });
+*/
+var groupIds = [];
+client.groups
+  .getAll()
+  .then((results) => {
+    // Process results - results is an array of group objects
+    results.forEach((group) => {
+      //console.log(`Group ID: ${group.id}, Name: ${group.name}`);
+      console.log(`GroupName & ID: ${group.name} = ${group.id}`);
+      groupIds.push(group.id);
+    });
+  })
+  .catch((err) => {
+    console.error("❌ Error: ", err);
   });
